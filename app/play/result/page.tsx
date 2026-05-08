@@ -1,10 +1,9 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { getPlayerToken, getPlayerMeta, getCurrentOptions } from "@/lib/auth";
+import { getPlayerToken, getPlayerMeta, getCurrentOptions, clearPlayer } from "@/lib/auth";
 import { createAndStartHub } from "@/lib/signalr";
 import type { ShowCorrectAnswerPayload, ShowLeaderboardPayload, NextQuestionPayload, EndGamePayload } from "@/lib/signalr";
-import type { LeaderboardEntry } from "@/lib/api";
 
 const SYMBOLS = ["▲", "◆", "●", "★"] as const;
 const COLORS  = ["#22d3ee", "#fbbf24", "#e879f9", "#a3e635"];
@@ -13,12 +12,10 @@ export default function ResultPage() {
   const router = useRouter();
   const [correctOptionId, setCorrectOptionId] = useState<string | null>(null);
   const [correctText, setCorrectText] = useState("");
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[] | null>(null);
-  const [roundIndex, setRoundIndex] = useState(0);
-  const [myEntry, setMyEntry] = useState<LeaderboardEntry | null>(null);
-  const [myRank, setMyRank] = useState<number | null>(null);
-  const [mySessionId, setMySessionId] = useState<string>("");
+  const [reconnectingTooLong, setReconnectingTooLong] = useState(false);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
+  const [finalData, setFinalData] = useState<EndGamePayload | null>(null);
+  const [mySessionId, setMySessionId] = useState<string | null>(null);
   const stopHubRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
@@ -32,35 +29,35 @@ export default function ResultPage() {
     const cachedText = sessionStorage.getItem("quizetu:last_correct_option_text");
     if (cachedCorrect) setCorrectOptionId(cachedCorrect);
     if (cachedText) setCorrectText(cachedText);
-    const cachedLb = sessionStorage.getItem("quizetu:leaderboard");
-    if (cachedLb) {
-      const lb: ShowLeaderboardPayload = JSON.parse(cachedLb);
-      setLeaderboard(lb.top10);
-      setRoundIndex(lb.roundIndex);
-      const entry = lb.top10.find((e) => e.sessionId === meta.id) ?? null;
-      setMyEntry(entry);
-      setMyRank(lb.top10.findIndex((e) => e.sessionId === meta.id) + 1 || null);
+    const cachedFinal = sessionStorage.getItem("quizetu:final");
+    if (cachedFinal) {
+      try {
+        setFinalData(JSON.parse(cachedFinal) as EndGamePayload);
+      } catch {
+        // ignore
+      }
     }
     setSelectedOptionId(sessionStorage.getItem("quizetu:selected_option_id"));
 
     (async () => {
       try {
         const stop = await createAndStartHub(token, meta.code, {
+          onConnectionIssue: (isStuck) => setReconnectingTooLong(isStuck),
           onShowCorrectAnswer: (p: ShowCorrectAnswerPayload) => {
             setCorrectOptionId(p.correctOptionId);
             setCorrectText(p.correctOptionText);
           },
           onShowLeaderboard: (lb: ShowLeaderboardPayload) => {
-            setLeaderboard(lb.top10);
-            setRoundIndex(lb.roundIndex);
-            const entry = lb.top10.find((e) => e.sessionId === meta.id) ?? null;
-            setMyEntry(entry);
-            setMyRank(lb.top10.findIndex((e) => e.sessionId === meta.id) + 1 || null);
+            // Ara leaderboard oyuncu ekranina basilmiyor.
+            void lb;
           },
           onNextQuestion: (q: NextQuestionPayload) => {
             sessionStorage.removeItem("quizetu:last_correct_option_id");
             sessionStorage.removeItem("quizetu:last_correct_option_text");
             sessionStorage.removeItem("quizetu:leaderboard");
+            sessionStorage.removeItem("quizetu:final");
+            sessionStorage.removeItem("quizetu:prev_totals");
+            sessionStorage.setItem("quizetu:incoming_question", JSON.stringify(q));
             // Yeni soru seçeneklerini sakla
             const { saveCurrentOptions } = require("@/lib/auth");
             saveCurrentOptions(q.options);
@@ -68,7 +65,13 @@ export default function ResultPage() {
           },
           onEndGame: (eg: EndGamePayload) => {
             sessionStorage.setItem("quizetu:final", JSON.stringify(eg));
-            router.push("/play/final");
+            setFinalData(eg);
+          },
+          onPlayerRemoved: (payload) => {
+            if (payload.nickname === meta.name) {
+              clearPlayer();
+              router.push("/");
+            }
           },
         });
         stopHubRef.current = stop;
@@ -82,6 +85,7 @@ export default function ResultPage() {
   const options = getCurrentOptions();
   const correctIndex = correctOptionId ? options.findIndex((o) => o.id === correctOptionId) : -1;
   const isCorrect = correctOptionId !== null && selectedOptionId === correctOptionId;
+  const myFinalRank = mySessionId ? finalData?.finalTop10.findIndex((x) => x.sessionId === mySessionId) ?? -1 : -1;
 
   const BG = (
     <div className="pointer-events-none absolute inset-0" aria-hidden style={{
@@ -94,9 +98,29 @@ export default function ResultPage() {
     <div className="relative min-h-screen bg-[#030712] overflow-hidden text-slate-100 flex flex-col items-center justify-center px-5 py-10">
       {BG}
       <div className="relative z-10 flex flex-col items-center gap-6 w-full max-w-sm">
+        {reconnectingTooLong && (
+          <div className="w-full text-xs text-amber-300 font-mono bg-amber-500/10 border border-amber-500/40 px-4 py-3">
+            ⚠ Yeniden bağlanıyor... Sorun hala devam ediyor mu, QR okutarak veya PIN&apos;i tekrar girerek bağlanmayı deneyin.
+          </div>
+        )}
+
+        {finalData && (
+          <>
+            <div className="w-full bg-slate-900/70 px-6 py-5 text-center border border-amber-400/30">
+              <p className="font-[family-name:var(--font-orbitron)] text-[10px] uppercase tracking-[0.28em] text-amber-300/80 mb-2">
+                Oyun Bitti
+              </p>
+              <p className="text-sm text-slate-300">
+                {myFinalRank >= 0
+                  ? `Oyunu ${myFinalRank + 1}. sırada tamamladın.`
+                  : "Oyunu tamamladın."}
+              </p>
+            </div>
+          </>
+        )}
 
         {/* Doğru cevap göstergesi */}
-        {correctOptionId && (
+        {correctOptionId && !finalData && (
           <div className="w-full bg-slate-900/70 px-6 py-5 text-center" style={{ borderLeft: "2px solid rgba(163,230,53,0.4)" }}>
             <p className="font-[family-name:var(--font-orbitron)] text-[10px] uppercase tracking-[0.28em] text-lime-400/70 mb-3">Doğru Cevap</p>
             {correctIndex >= 0 ? (
@@ -112,55 +136,31 @@ export default function ResultPage() {
           </div>
         )}
 
-        {/* Kişisel skor */}
-        {myEntry && (
-          <div className="w-full bg-amber-300/8 px-6 py-5 text-center" style={{ boxShadow: "0 0 32px rgba(251,191,36,0.1) inset" }}>
-            <p className="font-[family-name:var(--font-orbitron)] text-[10px] uppercase tracking-[0.28em] text-amber-300/60 mb-2">
-              Tur {roundIndex + 1} Puanın
+        {correctOptionId && selectedOptionId && !finalData && (
+          <div
+            className="w-full px-6 py-4 text-center border"
+            style={{
+              background: isCorrect ? "rgba(163,230,53,0.12)" : "rgba(239,68,68,0.10)",
+              borderColor: isCorrect ? "rgba(163,230,53,0.45)" : "rgba(239,68,68,0.45)",
+            }}
+          >
+            <p
+              className="font-[family-name:var(--font-orbitron)] text-sm uppercase tracking-[0.2em]"
+              style={{ color: isCorrect ? "#a3e635" : "#f87171" }}
+            >
+              {isCorrect ? "Doğru bildin!" : `Üzgünüz, cevap şu olacaktı: ${correctText}`}
             </p>
-            <div className="font-[family-name:var(--font-orbitron)] text-4xl font-black text-amber-300" style={{ textShadow: "0 0 24px rgba(251,191,36,0.4)" }}>
-              +{Math.round(myEntry.roundTotalPoints)}
-            </div>
-            <div className="flex justify-center gap-4 mt-2">
-              <span className="text-[10px] text-slate-500 font-mono">Hız: +{Math.round(myEntry.roundBasePoints)}</span>
-              <span className="text-[10px] text-slate-500 font-mono">Nadir: +{Math.round(myEntry.roundBonusPoints)}</span>
-            </div>
-            <div className="mt-3 pt-3 border-t border-slate-800/60 flex items-center justify-between">
-              <span className="text-[10px] font-[family-name:var(--font-orbitron)] text-slate-500 uppercase tracking-widest">Toplam</span>
-              <span className="font-[family-name:var(--font-orbitron)] text-sm font-bold text-cyan-400">{Math.round(myEntry.totalScore)} pt</span>
-            </div>
           </div>
         )}
 
-        {/* Sıralama (top 10) */}
-        {leaderboard && leaderboard.length > 0 && (
-          <div className="w-full bg-slate-900/60 px-5 py-4" style={{ borderLeft: "2px solid rgba(34,211,238,0.2)" }}>
-            <p className="font-[family-name:var(--font-orbitron)] text-[10px] uppercase tracking-[0.28em] text-cyan-400/60 mb-3">
-              Sıralama — Top {leaderboard.length}
-            </p>
-            <div className="flex flex-col gap-1.5">
-              {leaderboard.map((p, i) => (
-                <div key={p.sessionId} className="flex items-center gap-3 px-3 py-1.5"
-                  style={{ background: p.sessionId === mySessionId ? "rgba(251,191,36,0.08)" : "transparent", borderLeft: `2px solid ${i < 3 ? "#fbbf24" : "#22d3ee"}33` }}>
-                  <span className="font-[family-name:var(--font-orbitron)] text-xs w-5 text-slate-500">#{i + 1}</span>
-                  <span className="flex-1 text-sm" style={{ color: p.sessionId === mySessionId ? "#fde68a" : "#cbd5e1" }}>{p.nickname}</span>
-                  <span className="font-[family-name:var(--font-orbitron)] text-xs text-amber-300">{Math.round(p.totalScore)}</span>
-                </div>
-              ))}
-            </div>
-            {myRank && myRank > leaderboard.length && (
-              <p className="text-[10px] text-slate-600 mt-2 font-mono">Senin sıran: #{myRank}</p>
-            )}
-          </div>
-        )}
-
-        {!correctOptionId && !leaderboard && (
+        {!correctOptionId && !finalData && (
           <p className="text-xs font-[family-name:var(--font-orbitron)] text-slate-600 uppercase tracking-[0.24em] animate-pulse">Sonuç bekleniyor...</p>
         )}
-
-        <p className="text-xs font-[family-name:var(--font-orbitron)] text-slate-600 uppercase tracking-[0.22em] animate-pulse">
-          Bir sonraki soru için bekleniyor...
-        </p>
+        {!finalData && (
+          <p className="text-xs font-[family-name:var(--font-orbitron)] text-slate-600 uppercase tracking-[0.22em] animate-pulse">
+            Bir sonraki soru için bekleniyor...
+          </p>
+        )}
       </div>
     </div>
   );

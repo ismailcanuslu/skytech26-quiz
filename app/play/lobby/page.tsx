@@ -3,9 +3,13 @@
 import Image from "next/image";
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { getPlayerToken, getPlayerMeta } from "@/lib/auth";
+import { getPlayerToken, getPlayerMeta, clearPlayer } from "@/lib/auth";
 import { createAndStartHub } from "@/lib/signalr";
-import type { PlayerJoinedPayload, NextQuestionPayload } from "@/lib/signalr";
+import type {
+  PlayerJoinedPayload,
+  NextQuestionPayload,
+  LobbySnapshotPayload,
+} from "@/lib/signalr";
 import { saveCurrentOptions } from "@/lib/auth";
 
 export default function LobbyPage() {
@@ -14,6 +18,7 @@ export default function LobbyPage() {
   const [myName, setMyName] = useState("");
   const [playerCount, setPlayerCount] = useState(1);
   const [players, setPlayers] = useState<string[]>([]);
+  const [reconnectingTooLong, setReconnectingTooLong] = useState(false);
   const [dotCount, setDotCount] = useState(1);
   const stopHubRef = useRef<(() => Promise<void>) | null>(null);
   const dotRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -34,12 +39,33 @@ export default function LobbyPage() {
     (async () => {
       try {
         const stop = await createAndStartHub(token, meta.code, {
+          onConnectionIssue: (isStuck) => setReconnectingTooLong(isStuck),
+          onLobbySnapshot: (snapshot: LobbySnapshotPayload) => {
+            setPlayers(snapshot.players);
+            setPlayerCount(snapshot.playerCount);
+            if (snapshot.currentQuestion) {
+              saveCurrentOptions(snapshot.currentQuestion.options);
+              sessionStorage.setItem(
+                "quizetu:current_question",
+                JSON.stringify(snapshot.currentQuestion)
+              );
+              router.push("/play/game");
+            }
+          },
           onPlayerJoined: (p: PlayerJoinedPayload) => {
             setPlayerCount(p.playerCount);
             setPlayers((prev) => {
               if (prev.includes(p.nickname)) return prev;
               return [...prev, p.nickname];
             });
+          },
+          onPlayerRemoved: (p) => {
+            setPlayerCount(p.playerCount);
+            setPlayers((prev) => prev.filter((name) => name !== p.nickname));
+            if (p.nickname === meta.name) {
+              clearPlayer();
+              router.push("/");
+            }
           },
           onNextQuestion: (q: NextQuestionPayload) => {
             // Seçenekleri sakla (optionId lookup için)
@@ -112,6 +138,12 @@ export default function LobbyPage() {
         </div>
 
         {/* Katılımcı sayısı */}
+        {reconnectingTooLong && (
+          <div className="w-full mb-4 text-xs text-amber-300 font-mono bg-amber-500/10 border border-amber-500/40 px-4 py-3">
+            ⚠ Yeniden bağlanıyor... Sorun hala devam ediyor mu, QR okutarak veya PIN&apos;i tekrar girerek bağlanmayı deneyin.
+          </div>
+        )}
+
         <div className="w-full bg-amber-300/8 px-6 py-5 mb-5" style={{ boxShadow: "0 0 32px rgba(251,191,36,0.1) inset" }}>
           <div className="flex items-center justify-center gap-4">
             <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden style={{ flexShrink: 0, animation: "spin 1.4s linear infinite" }}>

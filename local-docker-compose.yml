@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quizetu-postgres-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quizetu
+      POSTGRES_PASSWORD: quizetu
+      POSTGRES_DB: quizetu
+    ports:
+      - "5432:5432"
+    volumes:
+      - quizetu_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quizetu -d quizetu"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: quizetu-redis-local
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - quizetu_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  quizetu_postgres_data:
+  quizetu_redis_data:

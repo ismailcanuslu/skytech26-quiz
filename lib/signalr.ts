@@ -3,10 +3,10 @@
 
 import type { LeaderboardEntry } from "./api";
 
-const HUB_URL =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL
-    : "http://localhost:8080") + "/hubs/game";
+const PUBLIC_API_URL =
+  typeof process !== "undefined" ? process.env.NEXT_PUBLIC_API_URL?.trim() : "";
+const API_BASE_URL = PUBLIC_API_URL ? PUBLIC_API_URL.replace(/\/+$/, "") : "";
+const HUB_URL = `${API_BASE_URL}/hubs/game`;
 
 // ─── Event payload tipleri ────────────────────────────────────────────────────
 
@@ -23,6 +23,7 @@ export type NextQuestionPayload = {
   text: string;
   timeLimit: number;
   points: number;
+  startedAtUtc: string;
   options: { id: string; text: string }[];
 };
 
@@ -45,10 +46,27 @@ export type EndGamePayload = {
   finalTop10: LeaderboardEntry[];
 };
 
+export type LobbySnapshotPayload = {
+  gamePin: string;
+  players: string[];
+  playerCount: number;
+  status: string;
+  currentQuestion?: NextQuestionPayload;
+};
+
+export type PlayerRemovedPayload = {
+  gamePin: string;
+  nickname: string;
+  playerCount: number;
+};
+
 // ─── Hub event handler'ları ───────────────────────────────────────────────────
 
 export type HubHandlers = {
   onPlayerJoined?: (payload: PlayerJoinedPayload) => void;
+  onLobbySnapshot?: (payload: LobbySnapshotPayload) => void;
+  onConnectionIssue?: (isStuck: boolean) => void;
+  onPlayerRemoved?: (payload: PlayerRemovedPayload) => void;
   onNextQuestion?: (payload: NextQuestionPayload) => void;
   onShowCorrectAnswer?: (payload: ShowCorrectAnswerPayload) => void;
   onShowLeaderboard?: (payload: ShowLeaderboardPayload) => void;
@@ -62,6 +80,20 @@ export async function createAndStartHub(
   gamePin: string,
   handlers: HubHandlers
 ): Promise<() => Promise<void>> {
+  const tryLoadLobbySnapshot = async () => {
+    if (!handlers.onLobbySnapshot) return;
+    try {
+      const snapshot = await connection.invoke<LobbySnapshotPayload>(
+        "GetLobbySnapshot",
+        gamePin
+      );
+      handlers.onLobbySnapshot(snapshot);
+    } catch (error) {
+      // Eski backend versiyonunda method olmayabilir; baglantiyi bozmayalim.
+      console.warn("Lobby snapshot alinamadi:", error);
+    }
+  };
+
   // Dynamic import — SSR sırasında yüklenmez
   const { HubConnectionBuilder, LogLevel } = await import("@microsoft/signalr");
 
@@ -70,6 +102,22 @@ export async function createAndStartHub(
     .withAutomaticReconnect()
     .configureLogging(LogLevel.Warning)
     .build();
+
+  let reconnectWarningTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearReconnectWarning = () => {
+    if (reconnectWarningTimer) {
+      clearTimeout(reconnectWarningTimer);
+      reconnectWarningTimer = null;
+    }
+    handlers.onConnectionIssue?.(false);
+  };
+
+  const armReconnectWarning = () => {
+    if (reconnectWarningTimer) return;
+    reconnectWarningTimer = setTimeout(() => {
+      handlers.onConnectionIssue?.(true);
+    }, 30000);
+  };
 
   // Event kayıt
   if (handlers.onPlayerJoined)
@@ -82,12 +130,35 @@ export async function createAndStartHub(
     connection.on("ShowLeaderboard", handlers.onShowLeaderboard);
   if (handlers.onEndGame)
     connection.on("EndGame", handlers.onEndGame);
+  if (handlers.onPlayerRemoved)
+    connection.on("PlayerRemoved", handlers.onPlayerRemoved);
+
+  connection.onreconnecting(() => {
+    armReconnectWarning();
+  });
+
+  connection.onreconnected(async () => {
+    clearReconnectWarning();
+    try {
+      await connection.invoke("JoinGameGroup", gamePin);
+      await tryLoadLobbySnapshot();
+    } catch {
+      armReconnectWarning();
+    }
+  });
+
+  connection.onclose(() => {
+    armReconnectWarning();
+  });
 
   await connection.start();
+  clearReconnectWarning();
   await connection.invoke("JoinGameGroup", gamePin);
+  await tryLoadLobbySnapshot();
 
   // Bağlantıyı kapat fonksiyonu döndür
   return async () => {
+    clearReconnectWarning();
     await connection.stop();
   };
 }

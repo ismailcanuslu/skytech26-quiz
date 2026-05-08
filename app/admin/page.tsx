@@ -7,7 +7,7 @@ import Image from "next/image";
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("admin@kahoot.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,15 +18,35 @@ export default function AdminLoginPage() {
     setLoading(true);
     try {
       const res = await adminLogin(email.trim(), password);
-      saveAdminToken(res.accessToken);
+
+      if (!res?.accessToken || typeof res.accessToken !== "string") {
+        throw new Error("Login yanıtında accessToken bulunamadı.");
+      }
+
+      try {
+        saveAdminToken(res.accessToken);
+      } catch {
+        throw new Error(
+          "Tarayıcı depolamasına yazılamadı. Gizli mod/cookie ayarlarını kontrol et."
+        );
+      }
+
       router.push("/admin/dashboard");
     } catch (err) {
       if (err instanceof ApiError) {
+        if (err.status === 0) {
+          setError("Sunucuya ulaşılamadı. CORS veya API URL ayarını kontrol et.");
+          return;
+        }
         setError(
           err.status === 401
             ? "E-posta veya şifre hatalı."
             : `Hata ${err.status}: ${err.message}`
         );
+      } else if (err instanceof SyntaxError) {
+        setError("Backend yanıtı okunamadı. JSON response formatını kontrol et.");
+      } else if (err instanceof Error) {
+        setError(err.message);
       } else {
         setError("Sunucuya ulaşılamadı. Backend çalışıyor mu?");
       }

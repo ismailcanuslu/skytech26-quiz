@@ -7,10 +7,13 @@ import {
   addQuestion,
   updateQuestion,
   deleteQuestion,
+  reorderQuestions,
   ApiError,
   type ApiQuizDetail,
   type ApiQuestion,
-  type UpsertQuestionBody,
+  type CreateQuestionBody,
+  type UpdateQuestionBody,
+  type QuestionOptionInput,
 } from "@/lib/api";
 import { getAdminToken } from "@/lib/auth";
 
@@ -19,16 +22,22 @@ const OPT_COLORS = ["#22d3ee", "#fbbf24", "#e879f9", "#a3e635"];
 const LABELS = ["A", "B", "C", "D"];
 
 /** Boş soru template'i (local draft, henüz backend'e gönderilmedi) */
-function emptyDraft(): UpsertQuestionBody {
+function emptyDraft(): CreateQuestionBody {
+  const createOption = (isCorrect: boolean): QuestionOptionInput => ({
+    id: crypto.randomUUID(),
+    text: "",
+    isCorrect,
+  });
+
   return {
     text: "",
     timeLimit: 20,
     points: 1000,
     options: [
-      { text: "", isCorrect: true },
-      { text: "", isCorrect: false },
-      { text: "", isCorrect: false },
-      { text: "", isCorrect: false },
+      createOption(true),
+      createOption(false),
+      createOption(false),
+      createOption(false),
     ],
   };
 }
@@ -42,12 +51,14 @@ export default function QuizEditorPage() {
   const [saved, setSaved] = useState<"idle" | "saving" | "ok" | "err">("idle");
   const [error, setError] = useState("");
   // Yeni soru draft state'i
-  const [draftQ, setDraftQ] = useState<UpsertQuestionBody | null>(null);
+  const [draftQ, setDraftQ] = useState<CreateQuestionBody | null>(null);
   const [addingQ, setAddingQ] = useState(false);
   // Inline editör için hangi soru düzenleniyor
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<UpsertQuestionBody | null>(null);
+  const [editDraft, setEditDraft] = useState<UpdateQuestionBody | null>(null);
   const [saving, setSaving] = useState(false);
+  const [draggingQuestionId, setDraggingQuestionId] = useState<string | null>(null);
+  const [dragOverQuestionId, setDragOverQuestionId] = useState<string | null>(null);
   const titleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async (token: string) => {
@@ -114,7 +125,7 @@ export default function QuizEditorPage() {
 
   // Mevcut soruyu güncelle
   async function handleUpdateQuestion(q: ApiQuestion) {
-    if (!editDraft || !quiz) return;
+    if (!editDraft || !quiz || saving) return;
     const token = getAdminToken();
     if (!token) return;
     const correctCount = editDraft.options.filter((o) => o.isCorrect).length;
@@ -143,14 +154,56 @@ export default function QuizEditorPage() {
     }
   }
 
+  async function handleDropQuestion(targetQuestionId: string) {
+    if (!quiz || !draggingQuestionId || draggingQuestionId === targetQuestionId) {
+      setDraggingQuestionId(null);
+      setDragOverQuestionId(null);
+      return;
+    }
+
+    const fromIdx = quiz.questions.findIndex((q) => q.id === draggingQuestionId);
+    const toIdx = quiz.questions.findIndex((q) => q.id === targetQuestionId);
+    if (fromIdx < 0 || toIdx < 0) {
+      setDraggingQuestionId(null);
+      setDragOverQuestionId(null);
+      return;
+    }
+
+    const reordered = [...quiz.questions];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+
+    const normalized = reordered.map((q, idx) => ({ ...q, order: idx }));
+    setQuiz({ ...quiz, questions: normalized });
+    setDraggingQuestionId(null);
+    setDragOverQuestionId(null);
+
+    const token = getAdminToken();
+    if (!token) return;
+
+    try {
+      await reorderQuestions(quiz.id, normalized.map((q) => q.id), token);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Soru sirasi kaydedilemedi.");
+      await load(token);
+    }
+  }
+
   // ── Option helpers ──────────────────────────────────────────────────────────
 
-  function setDraftOption(draft: UpsertQuestionBody, idx: number, text: string): UpsertQuestionBody {
+  function setDraftOption<T extends { options: QuestionOptionInput[] }>(
+    draft: T,
+    idx: number,
+    text: string
+  ): T {
     const options = draft.options.map((o, i) => i === idx ? { ...o, text } : o);
     return { ...draft, options };
   }
 
-  function setDraftCorrect(draft: UpsertQuestionBody, idx: number): UpsertQuestionBody {
+  function setDraftCorrect<T extends { options: QuestionOptionInput[] }>(
+    draft: T,
+    idx: number
+  ): T {
     const options = draft.options.map((o, i) => ({ ...o, isCorrect: i === idx }));
     return { ...draft, options };
   }
@@ -243,8 +296,38 @@ export default function QuizEditorPage() {
 
         {/* Mevcut sorular */}
         <div className="flex flex-col gap-5">
-          {quiz.questions.map((q, qIdx) => (
-            <div key={q.id} className="bg-slate-900/70 p-6 flex flex-col gap-4" style={{ borderLeft: "2px solid rgba(34,211,238,0.15)" }}>
+          {quiz.questions
+            .slice()
+            .sort((a, b) => a.order - b.order)
+            .map((q, qIdx) => (
+            <div
+              key={q.id}
+              draggable={editingId !== q.id}
+              onDragStart={() => setDraggingQuestionId(q.id)}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                if (draggingQuestionId && draggingQuestionId !== q.id) {
+                  setDragOverQuestionId(q.id);
+                }
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDragEnd={() => {
+                setDraggingQuestionId(null);
+                setDragOverQuestionId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                void handleDropQuestion(q.id);
+              }}
+              className="bg-slate-900/70 p-6 flex flex-col gap-4"
+              style={{
+                borderLeft:
+                  dragOverQuestionId === q.id
+                    ? "2px solid rgba(251,191,36,0.9)"
+                    : "2px solid rgba(34,211,238,0.15)",
+                opacity: draggingQuestionId === q.id ? 0.65 : 1,
+              }}
+            >
               {editingId === q.id && editDraft ? (
                 <QuestionForm
                   label={`SORU ${qIdx + 1} — Düzenleniyor`}
@@ -259,9 +342,15 @@ export default function QuizEditorPage() {
               ) : (
                 <>
                   <div className="flex items-center gap-3">
+                    <span
+                      className="text-slate-500 cursor-grab active:cursor-grabbing"
+                      title="Siralamak icin surukle birak"
+                    >
+                      ☰
+                    </span>
                     <span className="font-[family-name:var(--font-orbitron)] text-[10px] uppercase tracking-[0.2em] text-cyan-400/60">SORU {qIdx + 1}</span>
                     <span className="text-[10px] text-slate-600 font-mono ml-auto">{q.timeLimit}sn</span>
-                    <button onClick={() => { setEditingId(q.id); setEditDraft({ text: q.text, timeLimit: q.timeLimit, points: q.points, options: q.options.map((o) => ({ text: o.text, isCorrect: o.isCorrect })) }); setDraftQ(null); }}
+                    <button onClick={() => { setEditingId(q.id); setEditDraft({ text: q.text, timeLimit: q.timeLimit, points: q.points, options: q.options.map((o) => ({ id: o.id, text: o.text, isCorrect: o.isCorrect })) }); setDraftQ(null); }}
                       className="text-[10px] font-[family-name:var(--font-orbitron)] uppercase tracking-widest px-3 py-1.5 border border-slate-700/50 text-slate-400 hover:border-cyan-400/30 hover:text-cyan-400 transition">
                       Düzenle
                     </button>
@@ -301,8 +390,8 @@ export default function QuizEditorPage() {
 
 type QuestionFormProps = {
   label: string;
-  draft: UpsertQuestionBody;
-  onChange: (d: UpsertQuestionBody) => void;
+  draft: CreateQuestionBody | UpdateQuestionBody;
+  onChange: (d: CreateQuestionBody | UpdateQuestionBody) => void;
   onSetOption: (idx: number, text: string) => void;
   onSetCorrect: (idx: number) => void;
   onSave: () => void;

@@ -16,6 +16,9 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [newQuizTitle, setNewQuizTitle] = useState("");
+  const [newQuizDescription, setNewQuizDescription] = useState("");
 
   async function load(token: string) {
     setLoading(true);
@@ -40,15 +43,33 @@ export default function AdminDashboard() {
   }, [router]);
 
   async function handleNew() {
+    setNewQuizTitle("");
+    setNewQuizDescription("");
+    setError("");
+    setIsCreateModalOpen(true);
+  }
+
+  async function handleCreateQuiz(e: React.FormEvent) {
+    e.preventDefault();
     const token = getAdminToken();
     if (!token) return;
+    const title = newQuizTitle.trim();
+    if (!title) {
+      setError("Quiz adı zorunlu.");
+      return;
+    }
     setCreating(true);
     setError("");
     try {
-      const quiz = await createQuiz({ title: "Yeni Quiz", description: "" }, token);
+      const quiz = await createQuiz(
+        { title, description: newQuizDescription.trim() },
+        token
+      );
+      setIsCreateModalOpen(false);
       router.push(`/admin/quiz/${quiz.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Quiz oluşturulamadı.");
+    } finally {
       setCreating(false);
     }
   }
@@ -111,7 +132,7 @@ export default function AdminDashboard() {
           </div>
           <button id="new-quiz-btn" onClick={handleNew} disabled={creating}
             className="inline-flex min-h-10 items-center gap-2 bg-amber-300 px-6 py-2.5 font-[family-name:var(--font-orbitron)] text-xs font-semibold uppercase tracking-[0.2em] text-slate-950 hover:bg-amber-200 disabled:bg-slate-600 disabled:text-slate-400 disabled:cursor-not-allowed transition">
-            {creating ? "Oluşturuluyor..." : "+ Yeni Quiz"}
+            + Yeni Quiz
           </button>
         </div>
 
@@ -167,6 +188,68 @@ export default function AdminDashboard() {
           </div>
         )}
       </main>
+
+      {isCreateModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4">
+          <form
+            onSubmit={handleCreateQuiz}
+            className="w-full max-w-lg bg-slate-900 border border-slate-700/70 p-6 flex flex-col gap-4"
+          >
+            <h2 className="font-[family-name:var(--font-orbitron)] text-lg text-cyan-400 tracking-wide">
+              Yeni Quiz Oluştur
+            </h2>
+            <div>
+              <label
+                htmlFor="new-quiz-title"
+                className="block text-[10px] font-[family-name:var(--font-orbitron)] uppercase tracking-[0.22em] text-amber-300/80 mb-2"
+              >
+                Quiz Adı
+              </label>
+              <input
+                id="new-quiz-title"
+                type="text"
+                value={newQuizTitle}
+                onChange={(e) => setNewQuizTitle(e.target.value)}
+                className="w-full bg-slate-800/70 border border-slate-700/60 px-4 py-3 text-sm text-slate-100 outline-none focus:border-cyan-400/50 transition-colors"
+                placeholder="Orn. Genel Kultur"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="new-quiz-description"
+                className="block text-[10px] font-[family-name:var(--font-orbitron)] uppercase tracking-[0.22em] text-amber-300/80 mb-2"
+              >
+                Açıklama
+              </label>
+              <textarea
+                id="new-quiz-description"
+                value={newQuizDescription}
+                onChange={(e) => setNewQuizDescription(e.target.value)}
+                className="w-full min-h-24 resize-y bg-slate-800/70 border border-slate-700/60 px-4 py-3 text-sm text-slate-100 outline-none focus:border-cyan-400/50 transition-colors"
+                placeholder="Quiz hakkında kısa bir açıklama"
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(false)}
+                disabled={creating}
+                className="px-4 py-2 text-xs font-[family-name:var(--font-orbitron)] uppercase tracking-[0.16em] border border-slate-700/60 text-slate-300 hover:border-slate-500 disabled:opacity-50"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="submit"
+                disabled={creating}
+                className="px-4 py-2 text-xs font-[family-name:var(--font-orbitron)] uppercase tracking-[0.16em] bg-amber-300 text-slate-950 hover:bg-amber-200 disabled:bg-slate-600 disabled:text-slate-300"
+              >
+                {creating ? "Oluşturuluyor..." : "Oluştur"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

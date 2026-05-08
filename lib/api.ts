@@ -1,8 +1,8 @@
 // QuizETU — Backend REST API Client
 
-const BASE_URL =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL) ||
-  "http://localhost:8080";
+const PUBLIC_API_URL =
+  typeof process !== "undefined" ? process.env.NEXT_PUBLIC_API_URL?.trim() : "";
+const BASE_URL = PUBLIC_API_URL ? PUBLIC_API_URL.replace(/\/+$/, "") : "";
 
 // ─── Yardımcı ─────────────────────────────────────────────────────────────────
 
@@ -10,26 +10,45 @@ async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers ?? {}),
-    },
-    ...options,
-  });
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch {
+    throw new ApiError(0, "Network error");
+  }
 
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
       const body = await res.json();
       message = body?.message ?? body?.title ?? message;
-    } catch { /* ignore */ }
+    } catch {
+      try {
+        const text = (await res.text())?.trim();
+        if (text) message = text;
+      } catch {
+        // ignore
+      }
+    }
     throw new ApiError(res.status, message);
   }
 
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T;
-  return res.json() as Promise<T>;
+
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new ApiError(res.status, "Sunucudan gecersiz JSON yaniti dondu.");
+  }
 }
 
 export class ApiError extends Error {
@@ -216,10 +235,27 @@ export type ApiQuizOption = {
 /** Backend'den gelen soru */
 export type ApiQuestion = {
   id: string;
+  order: number;
   text: string;
   timeLimit: number;
   points: number;
   options: ApiQuizOption[];
+};
+
+export type QuestionOptionInput = {
+  id: string;
+  text: string;
+  isCorrect: boolean;
+};
+
+type ApiQuestionWire = {
+  id: string;
+  order?: number;
+  text: string;
+  timeLimit: number;
+  points: number;
+  answerOptions?: ApiQuizOption[];
+  options?: ApiQuizOption[];
 };
 
 /** Quiz özet (liste için) */
@@ -237,19 +273,67 @@ export type ApiQuizDetail = ApiQuizSummary & {
   questions: ApiQuestion[];
 };
 
+type ApiQuizDetailWire = Omit<ApiQuizDetail, "questions"> & {
+  questions: ApiQuestionWire[];
+};
+
 /** Quiz oluşturma / güncelleme request body */
 export type UpsertQuizBody = {
   title: string;
   description?: string;
 };
 
-/** Soru oluşturma / güncelleme request body */
-export type UpsertQuestionBody = {
+/** Soru oluşturma request body */
+export type CreateQuestionBody = {
   text: string;
   timeLimit: number;
   points?: number;
-  options: { text: string; isCorrect: boolean }[];
+  options: QuestionOptionInput[];
 };
+
+/** Soru güncelleme request body */
+export type UpdateQuestionBody = {
+  text: string;
+  timeLimit: number;
+  points?: number;
+  options: QuestionOptionInput[];
+};
+
+type UpsertQuestionWireBody = {
+  text: string;
+  timeLimit: number;
+  points?: number;
+  answerOptions: { id: string; text: string; isCorrect: boolean }[];
+};
+
+function mapQuestionFromApi(question: ApiQuestionWire): ApiQuestion {
+  return {
+    id: question.id,
+    order: question.order ?? 0,
+    text: question.text,
+    timeLimit: question.timeLimit,
+    points: question.points,
+    options: question.answerOptions ?? question.options ?? [],
+  };
+}
+
+function mapQuizDetailFromApi(quiz: ApiQuizDetailWire): ApiQuizDetail {
+  return {
+    ...quiz,
+    questions: (quiz.questions ?? []).map(mapQuestionFromApi),
+  };
+}
+
+function mapQuestionToApi(
+  body: CreateQuestionBody | UpdateQuestionBody
+): UpsertQuestionWireBody {
+  return {
+    text: body.text,
+    timeLimit: body.timeLimit,
+    points: body.points,
+    answerOptions: body.options,
+  };
+}
 
 // ── Quiz List ──────────────────────────────────────────────────────────────────
 
@@ -267,9 +351,10 @@ export async function getQuizDetail(
   id: string,
   adminToken: string
 ): Promise<ApiQuizDetail> {
-  return apiFetch<ApiQuizDetail>(`/api/admin/quizzes/${id}`, {
+  const quiz = await apiFetch<ApiQuizDetailWire>(`/api/admin/quizzes/${id}`, {
     headers: authHeader(adminToken),
   });
+  return mapQuizDetailFromApi(quiz);
 }
 
 // ── Quiz Oluştur ───────────────────────────────────────────────────────────────
@@ -278,11 +363,12 @@ export async function createQuiz(
   body: UpsertQuizBody,
   adminToken: string
 ): Promise<ApiQuizDetail> {
-  return apiFetch<ApiQuizDetail>("/api/admin/quizzes", {
+  const quiz = await apiFetch<ApiQuizDetailWire>("/api/admin/quizzes", {
     method: "POST",
     headers: authHeader(adminToken),
     body: JSON.stringify(body),
   });
+  return mapQuizDetailFromApi(quiz);
 }
 
 // ── Quiz Güncelle ──────────────────────────────────────────────────────────────
@@ -292,11 +378,12 @@ export async function updateQuiz(
   body: UpsertQuizBody,
   adminToken: string
 ): Promise<ApiQuizDetail> {
-  return apiFetch<ApiQuizDetail>(`/api/admin/quizzes/${id}`, {
+  const quiz = await apiFetch<ApiQuizDetailWire>(`/api/admin/quizzes/${id}`, {
     method: "PUT",
     headers: authHeader(adminToken),
     body: JSON.stringify(body),
   });
+  return mapQuizDetailFromApi(quiz);
 }
 
 // ── Quiz Sil (pasif yap) ───────────────────────────────────────────────────────
@@ -315,14 +402,18 @@ export async function deleteQuiz(
 
 export async function addQuestion(
   quizId: string,
-  body: UpsertQuestionBody,
+  body: CreateQuestionBody,
   adminToken: string
 ): Promise<ApiQuestion> {
-  return apiFetch<ApiQuestion>(`/api/admin/quizzes/${quizId}/questions`, {
-    method: "POST",
-    headers: authHeader(adminToken),
-    body: JSON.stringify(body),
-  });
+  const question = await apiFetch<ApiQuestionWire>(
+    `/api/admin/quizzes/${quizId}/questions`,
+    {
+      method: "POST",
+      headers: authHeader(adminToken),
+      body: JSON.stringify(mapQuestionToApi(body)),
+    }
+  );
+  return mapQuestionFromApi(question);
 }
 
 // ── Soru Güncelle ─────────────────────────────────────────────────────────────
@@ -330,17 +421,18 @@ export async function addQuestion(
 export async function updateQuestion(
   quizId: string,
   questionId: string,
-  body: UpsertQuestionBody,
+  body: UpdateQuestionBody,
   adminToken: string
 ): Promise<ApiQuestion> {
-  return apiFetch<ApiQuestion>(
+  const question = await apiFetch<ApiQuestionWire>(
     `/api/admin/quizzes/${quizId}/questions/${questionId}`,
     {
       method: "PUT",
       headers: authHeader(adminToken),
-      body: JSON.stringify(body),
+      body: JSON.stringify(mapQuestionToApi(body)),
     }
   );
+  return mapQuestionFromApi(question);
 }
 
 // ── Soru Sil ──────────────────────────────────────────────────────────────────
@@ -357,4 +449,28 @@ export async function deleteQuestion(
       headers: authHeader(adminToken),
     }
   );
+}
+
+export async function reorderQuestions(
+  quizId: string,
+  questionIds: string[],
+  adminToken: string
+): Promise<void> {
+  return apiFetch<void>(`/api/admin/quizzes/${quizId}/questions/reorder`, {
+    method: "POST",
+    headers: authHeader(adminToken),
+    body: JSON.stringify({ questionIds }),
+  });
+}
+
+export async function banPlayer(
+  gamePin: string,
+  nickname: string,
+  adminToken: string
+): Promise<void> {
+  return apiFetch<void>(`/api/gamesession/${gamePin}/ban-player`, {
+    method: "POST",
+    headers: authHeader(adminToken),
+    body: JSON.stringify({ nickname }),
+  });
 }
