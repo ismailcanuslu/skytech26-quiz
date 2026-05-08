@@ -56,3 +56,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
+          # KRİTİK EKLEME BURASI:
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://quiz.etubmt.com
