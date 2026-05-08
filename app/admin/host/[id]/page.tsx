@@ -161,11 +161,28 @@ export default function HostPage() {
     const showIncomingQuestion = (q: NextQuestionPayload) => {
       const startedAtMs = q.startedAtUtc ? Date.parse(q.startedAtUtc) : NaN;
       const safeStartMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
+      const msUntilStart = safeStartMs - Date.now();
 
       setCurrentQ(null);
       setPhase("question");
-      setIncomingCountdown(3);
       if (incomingTimerRef.current) clearInterval(incomingTimerRef.current);
+      if (msUntilStart <= 250) {
+        setIncomingCountdown(null);
+        setCurrentQ(q);
+        questionStartRef.current = safeStartMs;
+        const initialLeft = Math.max(0, Math.ceil(q.timeLimit - (Date.now() - questionStartRef.current) / 1000));
+        setTimeLeft(initialLeft);
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          const elapsed = (Date.now() - questionStartRef.current) / 1000;
+          const left = Math.max(0, Math.ceil(q.timeLimit - elapsed));
+          setTimeLeft(left);
+          if (left === 0 && timerRef.current) clearInterval(timerRef.current);
+        }, 300);
+        return;
+      }
+
+      setIncomingCountdown(3);
       playTone(520, 80, 0.03);
       incomingTimerRef.current = setInterval(() => {
         setIncomingCountdown((prev) => {

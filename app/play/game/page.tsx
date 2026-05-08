@@ -127,14 +127,25 @@ export default function GamePage() {
   }, []);
 
   const showIncomingQuestion = useCallback((q: NextQuestionPayload) => {
+    const startedAtMs = q.startedAtUtc ? Date.parse(q.startedAtUtc) : NaN;
+    const safeStartMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
+    const msUntilStart = safeStartMs - Date.now();
+
     saveCurrentOptions(q.options);
     setQuestion(null);
     setSelected(null);
     setSubmitted(false);
     setError("");
-    setIncomingCountdown(3);
 
     if (incomingTimerRef.current) clearInterval(incomingTimerRef.current);
+    if (msUntilStart <= 250) {
+      setIncomingCountdown(null);
+      setQuestion(q);
+      startTimer(q.timeLimit, q.startedAtUtc);
+      return;
+    }
+
+    setIncomingCountdown(3);
     incomingTimerRef.current = setInterval(() => {
       setIncomingCountdown((prev) => {
         if (prev === null) return prev;
