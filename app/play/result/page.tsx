@@ -18,6 +18,7 @@ export default function ResultPage() {
   const [myEntry, setMyEntry] = useState<LeaderboardEntry | null>(null);
   const [myRank, setMyRank] = useState<number | null>(null);
   const [mySessionId, setMySessionId] = useState<string>("");
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const stopHubRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,7 @@ export default function ResultPage() {
       setMyEntry(entry);
       setMyRank(lb.top10.findIndex((e) => e.sessionId === meta.id) + 1 || null);
     }
+    setSelectedOptionId(sessionStorage.getItem("quizetu:selected_option_id"));
 
     (async () => {
       try {
@@ -79,7 +81,6 @@ export default function ResultPage() {
   // Seçilen seçeneğin index'ini bul (sembole karşılık gelen)
   const options = getCurrentOptions();
   const correctIndex = correctOptionId ? options.findIndex((o) => o.id === correctOptionId) : -1;
-  const selectedOptionId = sessionStorage.getItem("quizetu:selected_option_id"); // opsiyonel
   const isCorrect = correctOptionId !== null && selectedOptionId === correctOptionId;
 
   const BG = (
